@@ -132,10 +132,13 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             if hasWholeCards then
                 local newInstances = {}
                 for _, instance in ipairs(wholeCards) do
-                    -- Use NoParameterCardInstance for all card types.
-                    -- Reinforcement cards store their armies in a separate field but
-                    -- GameOrderReceiveCard handles this via the CardID.
-                    newInstances[#newInstances + 1] = WL.NoParameterCardInstance.Create(instance.CardID)
+                    if instance.CardID == WL.CardID.Reinforcement then
+                        -- Reinforcement cards must use ReinforcementCardInstance
+                        -- and preserve the armies value from the original.
+                        newInstances[#newInstances + 1] = WL.ReinforcementCardInstance.Create(instance.Armies)
+                    else
+                        newInstances[#newInstances + 1] = WL.NoParameterCardInstance.Create(instance.CardID)
+                    end
                 end
                 addNewOrder(WL.GameOrderReceiveCard.Create(killerID, newInstances))
             end
