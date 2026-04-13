@@ -93,81 +93,165 @@ end
 -- Helpers
 -----------------------------------------------------------------------
 
--- Collect all whole cards belonging to a player from the standing
-local function getWholeCards(standing, playerID)
-    local cards = standing.Cards[playerID]
-    if cards == nil then return {} end
-    local instances = {}
-    for _, instance in pairs(cards.WholeCards) do
-        instances[#instances + 1] = instance
+-- Returns { wholeCards = [...CardInstance], pieces = {cardID -> count} }
+-- for a player, or nil if they have no cards or pieces at all.
+local function getPlayerCards(standing, playerID)
+    local pc = standing.Cards[playerID]
+    if pc == nil then return nil end
+
+    local wholeCards = {}
+    if pc.WholeCards ~= nil then
+        for _, instance in pairs(pc.WholeCards) do
+            wholeCards[#wholeCards + 1] = instance
+        end
     end
-    return instances
+
+    local pieces = {}
+    local hasPieces = false
+    if pc.Pieces ~= nil then
+        for cardID, count in pairs(pc.Pieces) do
+            if count > 0 then
+                pieces[cardID] = count
+                hasPieces = true
+            end
+        end
+    end
+
+    if #wholeCards == 0 and not hasPieces then return nil end
+    return { wholeCards = wholeCards, pieces = pieces }
 end
 
 -----------------------------------------------------------------------
--- _End: transfer or discard cards for eliminated/surrendered players
+-- _End: transfer or discard cards+pieces for eliminated/surrendered players
 -----------------------------------------------------------------------
 function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
     for playerID, _ in pairs(_KGC_wasAlive) do
-        local player    = players[playerID]
-        local nowElim   = (player.State == WL.GamePlayerState.Eliminated)
-        local nowSurr   = _KGC_surrendered[playerID]
+        local player  = players[playerID]
+        local nowElim = (player.State == WL.GamePlayerState.Eliminated)
+        local nowSurr = _KGC_surrendered[playerID]
 
         if not nowElim and not nowSurr then goto continue end
 
-        local cards = getWholeCards(standing, playerID)
-        if #cards == 0 then goto continue end
+        -- In a team game, cards are shared. Only transfer when the last member
+        -- of a team is eliminated/surrendered. If any teammate is still alive, skip.
+        do
+            local myTeam = player.Team
+            local teammateAlive = false
+            for _, other in pairs(players) do
+                if other.ID ~= playerID
+                   and other.Team == myTeam
+                   and other.State == WL.GamePlayerState.Playing then
+                    teammateAlive = true
+                    break
+                end
+            end
+            if teammateAlive then goto continue end
+        end
 
-        -- Build the RemoveWholeCardsOpt table (cardInstanceID -> playerID)
-        -- needed to strip the cards from the loser regardless of transfer.
-        local removeCards = {}
-        for _, instance in ipairs(cards) do
-            removeCards[instance.ID] = playerID
+        local pc = getPlayerCards(standing, playerID)
+        if pc == nil then goto continue end
+
+        local loserName = players[playerID].DisplayName(nil, false)
+
+        -- RemoveWholeCardsOpt: Table<PlayerID, CardInstanceID[]>
+        local removeWholeCards = nil
+        if #pc.wholeCards > 0 then
+            local ids = {}
+            for _, instance in ipairs(pc.wholeCards) do
+                ids[#ids + 1] = instance.ID
+            end
+            removeWholeCards = {}
+            removeWholeCards[playerID] = ids
+        end
+
+        -- AddCardPiecesOpt for removing pieces from loser: negative counts
+        local removePieces = nil
+        local hasPieces = false
+        for _ in pairs(pc.pieces) do hasPieces = true; break end
+        if hasPieces then
+            local loserPieces = {}
+            for cardID, count in pairs(pc.pieces) do
+                loserPieces[cardID] = -count
+            end
+            removePieces = {}
+            removePieces[playerID] = loserPieces
         end
 
         if nowSurr then
-            -- Rule 4: surrender -> discard cards, no transfer
+            -- Rule 4: surrender -> discard everything, no transfer
             local event = WL.GameOrderEvent.Create(
                 playerID,
-                players[playerID].DisplayName(nil, false)
-                    .. ' surrendered. Their cards have been discarded.',
+                loserName .. ' surrendered. Their cards have been discarded.',
                 nil, nil, nil, nil
             )
-            event.RemoveWholeCardsOpt = removeCards
+            if removeWholeCards ~= nil then
+                event.RemoveWholeCardsOpt = removeWholeCards
+            end
+            if removePieces ~= nil then
+                event.AddCardPiecesOpt = removePieces
+            end
             addNewOrder(event)
 
         elseif nowElim then
             local killerID = _KGC_killerOf[playerID]
 
             if killerID == nil then
-                -- Eliminated with no recorded killer (e.g. blockade commander death)
-                -- -> discard cards
+                -- No human killer (e.g. blockade) -> discard
                 local event = WL.GameOrderEvent.Create(
                     playerID,
-                    players[playerID].DisplayName(nil, false)
-                        .. ' was eliminated. Their cards have been discarded.',
+                    loserName .. ' was eliminated. Their cards have been discarded.',
                     nil, nil, nil, nil
                 )
-                event.RemoveWholeCardsOpt = removeCards
+                if removeWholeCards ~= nil then
+                    event.RemoveWholeCardsOpt = removeWholeCards
+                end
+                if removePieces ~= nil then
+                    event.AddCardPiecesOpt = removePieces
+                end
                 addNewOrder(event)
             else
-                -- Transfer cards to killer:
-                -- 1. Remove from loser
-                local removeEvent = WL.GameOrderEvent.Create(
+                local killerName = players[killerID].DisplayName(nil, false)
+
+                -- Build AddCardPiecesOpt: remove from loser AND add to killer
+                -- in the same event so pieces don't get lost.
+                local cardPiecesOpt = nil
+                if hasPieces then
+                    cardPiecesOpt = {}
+                    -- Remove from loser
+                    local loserPieces = {}
+                    for cardID, count in pairs(pc.pieces) do
+                        loserPieces[cardID] = -count
+                    end
+                    cardPiecesOpt[playerID] = loserPieces
+                    -- Add to killer
+                    local killerPieces = {}
+                    for cardID, count in pairs(pc.pieces) do
+                        killerPieces[cardID] = count
+                    end
+                    cardPiecesOpt[killerID] = killerPieces
+                end
+
+                -- Event: strip whole cards + transfer pieces
+                local event = WL.GameOrderEvent.Create(
                     playerID,
-                    players[playerID].DisplayName(nil, false)
-                        .. '\'s cards have been transferred to '
-                        .. players[killerID].DisplayName(nil, false) .. '.',
+                    loserName .. '\'s cards have been transferred to ' .. killerName .. '.',
                     nil, nil, nil, nil
                 )
-                removeEvent.RemoveWholeCardsOpt = removeCards
-                addNewOrder(removeEvent)
+                if removeWholeCards ~= nil then
+                    event.RemoveWholeCardsOpt = removeWholeCards
+                end
+                if cardPiecesOpt ~= nil then
+                    event.AddCardPiecesOpt = cardPiecesOpt
+                end
+                addNewOrder(event)
 
-                -- 2. Give to killer via GameOrderReceiveCard
-                addNewOrder(WL.GameOrderReceiveCard.Create(killerID, cards))
+                -- Give whole cards to killer via GameOrderReceiveCard
+                if #pc.wholeCards > 0 then
+                    addNewOrder(WL.GameOrderReceiveCard.Create(killerID, pc.wholeCards))
+                end
             end
         end
 
