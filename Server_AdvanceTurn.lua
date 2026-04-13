@@ -125,6 +125,32 @@ function Server_AdvanceTurn_End(game, addNewOrder)
         end
 
         local pc = getPlayerCards(standing, playerID)
+
+        -- DIAGNOSTIC: crash with card state at _End time for eliminated/surrendered
+        if nowElim or nowSurr then
+            local rawPc = standing.Cards[playerID]
+            local wholeCount = 0
+            local pieceInfo = ''
+            if rawPc ~= nil then
+                if rawPc.WholeCards ~= nil then
+                    for _ in pairs(rawPc.WholeCards) do wholeCount = wholeCount + 1 end
+                end
+                if rawPc.Pieces ~= nil then
+                    for cid, cnt in pairs(rawPc.Pieces) do
+                        pieceInfo = pieceInfo .. tostring(cid) .. 'x' .. tostring(cnt) .. ','
+                    end
+                end
+            end
+            error('KGC_END_DIAG | pid=' .. tostring(playerID)
+                  .. ' elim=' .. tostring(nowElim)
+                  .. ' surr=' .. tostring(nowSurr)
+                  .. ' killer=' .. tostring(_KGC_killerOf[playerID])
+                  .. ' pc_nil=' .. tostring(pc == nil)
+                  .. ' rawCards_nil=' .. tostring(rawPc == nil)
+                  .. ' wholeCount=' .. wholeCount
+                  .. ' pieces=(' .. pieceInfo .. ')')
+        end
+
         if pc == nil then goto continue end
 
         local loserName = players[playerID].DisplayName(nil, false)
