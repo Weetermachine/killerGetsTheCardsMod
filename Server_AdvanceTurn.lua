@@ -70,19 +70,30 @@ function Server_AdvanceTurn_End(game, addNewOrder)
 
         if not nowElim and not nowSurr then goto continue end
 
-        -- Team check
+        -- Team check: only skip if the game actually has multiple teams
+        -- and a teammate is still alive. In a no-teams game everyone shares
+        -- team=0, so we must not treat all players as teammates.
         do
             local myTeam = player.Team
-            local teammateAlive = false
+            local gameHasTeams = false
             for _, other in pairs(players) do
-                if other.ID ~= playerID
-                   and other.Team == myTeam
-                   and other.State == WL.GamePlayerState.Playing then
-                    teammateAlive = true
+                if other.Team ~= myTeam then
+                    gameHasTeams = true
                     break
                 end
             end
-            if teammateAlive then goto continue end
+            if gameHasTeams then
+                local teammateAlive = false
+                for _, other in pairs(players) do
+                    if other.ID ~= playerID
+                       and other.Team == myTeam
+                       and other.State == WL.GamePlayerState.Playing then
+                        teammateAlive = true
+                        break
+                    end
+                end
+                if teammateAlive then goto continue end
+            end
         end
 
         local pc = getPlayerCards(standing, playerID)
