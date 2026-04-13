@@ -1,5 +1,12 @@
 -- Server_AdvanceTurn.lua
 -- "Killer Gets the Cards" mod
+--
+-- When a player is eliminated, create new card instances matching their hand
+-- and give them to the killer via GameOrderReceiveCard.
+-- Warzone automatically clears the eliminated player's cards, so we don't
+-- need to explicitly remove them.
+-- Pieces are transferred via AddCardPiecesOpt on a GameOrderEvent.
+-- Surrenders and blockade kills result in cards being discarded (nothing given).
 
 _KGC_killerOf    = {}
 _KGC_surrendered = {}
@@ -32,29 +39,6 @@ function Server_AdvanceTurn_Order(game, order, orderResult, skipThisOrder, addNe
     end
 end
 
-local function getPlayerCards(standing, playerID)
-    local pc = standing.Cards[playerID]
-    if pc == nil then return nil end
-    local wholeCards = {}
-    if pc.WholeCards ~= nil then
-        for _, instance in pairs(pc.WholeCards) do
-            wholeCards[#wholeCards + 1] = instance
-        end
-    end
-    local pieces = {}
-    local hasPieces = false
-    if pc.Pieces ~= nil then
-        for cardID, count in pairs(pc.Pieces) do
-            if count > 0 then
-                pieces[cardID] = count
-                hasPieces = true
-            end
-        end
-    end
-    if #wholeCards == 0 and not hasPieces then return nil end
-    return { wholeCards = wholeCards, pieces = pieces }
-end
-
 local function tableHasKeys(t)
     for _ in pairs(t) do return true end
     return false
@@ -70,7 +54,7 @@ function Server_AdvanceTurn_End(game, addNewOrder)
 
         if not nowElim and not nowSurr then goto continue end
 
-        -- Team check: only skip if the game has multiple teams and a teammate is alive
+        -- Team check: only act if no teammates are still alive
         do
             local myTeam = player.Team
             local gameHasTeams = false
@@ -91,75 +75,89 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             end
         end
 
-        local pc = getPlayerCards(standing, playerID)
+        local pc = standing.Cards[playerID]
         if pc == nil then goto continue end
 
-        local loserName  = players[playerID].DisplayName(nil, false)
-        local hasPieces  = tableHasKeys(pc.pieces)
-        local killerID   = _KGC_killerOf[playerID]
-
-        -- Build RemoveWholeCardsOpt: { [playerID] = {guid, ...} }
-        local removeWholeCards = nil
-        if #pc.wholeCards > 0 then
-            local ids = {}
-            for _, instance in ipairs(pc.wholeCards) do
-                ids[#ids + 1] = instance.ID
+        -- Check for whole cards
+        local wholeCards = {}
+        if pc.WholeCards ~= nil then
+            for _, instance in pairs(pc.WholeCards) do
+                wholeCards[#wholeCards + 1] = instance
             end
-            removeWholeCards = {}
-            removeWholeCards[playerID] = ids
         end
 
-        if nowSurr or killerID == nil then
-            -- Surrender or no human killer (blockade) -> discard
-            local msg = nowSurr
-                and (loserName .. ' surrendered. Their cards have been discarded.')
-                or  (loserName .. ' was eliminated. Their cards have been discarded.')
-            local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
-            if removeWholeCards ~= nil then
-                event.RemoveWholeCardsOpt = removeWholeCards
+        -- Check for pieces
+        local pieces = {}
+        if pc.Pieces ~= nil then
+            for cardID, count in pairs(pc.Pieces) do
+                if count > 0 then
+                    pieces[cardID] = count
+                end
             end
+        end
+
+        local hasWholeCards = #wholeCards > 0
+        local hasPieces     = tableHasKeys(pieces)
+        if not hasWholeCards and not hasPieces then goto continue end
+
+        local killerID  = _KGC_killerOf[playerID]
+        local loserName = players[playerID].DisplayName(nil, false)
+
+        if nowSurr or killerID == nil then
+            -- Discard: Warzone clears whole cards on elimination automatically.
+            -- For pieces, subtract them via AddCardPiecesOpt.
             if hasPieces then
                 local loserPieces = {}
-                for cardID, count in pairs(pc.pieces) do
+                for cardID, count in pairs(pieces) do
                     loserPieces[cardID] = -count
                 end
-                local removePieces = {}
-                removePieces[playerID] = loserPieces
-                event.AddCardPiecesOpt = removePieces
+                local cardPiecesOpt = {}
+                cardPiecesOpt[playerID] = loserPieces
+                local msg = nowSurr
+                    and (loserName .. ' surrendered. Their cards have been discarded.')
+                    or  (loserName .. ' was eliminated. Their cards have been discarded.')
+                local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
+                event.AddCardPiecesOpt = cardPiecesOpt
+                addNewOrder(event)
             end
-            addNewOrder(event)
 
         else
             -- Transfer to killer
             local killerName = players[killerID].DisplayName(nil, false)
             local msg = loserName .. '\'s cards have been transferred to ' .. killerName .. '.'
 
-            -- Build piece transfer: subtract from loser, add to killer
-            local cardPiecesOpt = nil
+            -- Create new card instances matching the loser's whole cards and give to killer.
+            -- We cannot pass the existing CardInstance objects directly as they belong to
+            -- the eliminated player; we must create fresh instances of the same card types.
+            if hasWholeCards then
+                local newInstances = {}
+                for _, instance in ipairs(wholeCards) do
+                    -- Use NoParameterCardInstance for all card types.
+                    -- Reinforcement cards store their armies in a separate field but
+                    -- GameOrderReceiveCard handles this via the CardID.
+                    newInstances[#newInstances + 1] = WL.NoParameterCardInstance.Create(instance.CardID)
+                end
+                addNewOrder(WL.GameOrderReceiveCard.Create(killerID, newInstances))
+            end
+
+            -- Transfer pieces via AddCardPiecesOpt: subtract from loser, add to killer
             if hasPieces then
                 local loserPieces  = {}
                 local killerPieces = {}
-                for cardID, count in pairs(pc.pieces) do
+                for cardID, count in pairs(pieces) do
                     loserPieces[cardID]  = -count
                     killerPieces[cardID] = count
                 end
-                cardPiecesOpt = {}
+                local cardPiecesOpt = {}
                 cardPiecesOpt[playerID] = loserPieces
                 cardPiecesOpt[killerID] = killerPieces
-            end
-
-            local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
-            if removeWholeCards ~= nil then
-                event.RemoveWholeCardsOpt = removeWholeCards
-            end
-            if cardPiecesOpt ~= nil then
+                local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
                 event.AddCardPiecesOpt = cardPiecesOpt
-            end
-            addNewOrder(event)
-
-            -- Give whole cards to killer
-            if #pc.wholeCards > 0 then
-                addNewOrder(WL.GameOrderReceiveCard.Create(killerID, pc.wholeCards))
+                addNewOrder(event)
+            elseif hasWholeCards then
+                -- Still emit a visible event even if no pieces to transfer
+                local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
+                addNewOrder(event)
             end
         end
 
