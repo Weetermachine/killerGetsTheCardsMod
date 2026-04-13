@@ -103,11 +103,14 @@ function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
-    -- UNCONDITIONAL DIAGNOSTIC: dump all player states
+    -- UNCONDITIONAL DIAGNOSTIC: dump key vs player.ID
     local info = 'Elim=' .. tostring(WL.GamePlayerState.Eliminated) .. ' '
     for playerID, player in pairs(players) do
-        info = info .. '[pid=' .. tostring(playerID)
+        local nowElim = (player.State == WL.GamePlayerState.Eliminated)
+        info = info .. '[key=' .. tostring(playerID)
+                    .. ' id=' .. tostring(player.ID)
                     .. ' state=' .. tostring(player.State)
+                    .. ' nowElim=' .. tostring(nowElim)
                     .. ' surr=' .. tostring(player.Surrendered) .. ']'
     end
     error('KGC_END_DUMP | ' .. info)
