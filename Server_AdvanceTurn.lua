@@ -1,12 +1,12 @@
 -- Server_AdvanceTurn.lua
 -- "Killer Gets the Cards" mod
 
-_KGC_killerOf    = {}
+_KGC_teamKiller  = {}  -- [teamID] = killerID, updated every attack on a team member
 _KGC_surrendered = {}
 _KGC_wasAlive    = {}
 
 function Server_AdvanceTurn_Start(game, addNewOrder)
-    _KGC_killerOf    = {}
+    _KGC_teamKiller  = {}
     _KGC_surrendered = {}
     _KGC_wasAlive    = {}
     for _, player in pairs(game.Game.Players) do
@@ -22,17 +22,31 @@ end
 function Server_AdvanceTurn_Order(game, order, orderResult, skipThisOrder, addNewOrder)
     if order.proxyType ~= 'GameOrderAttackTransfer' then return end
     if not orderResult.IsAttack then return end
+
     local attackerID = order.PlayerID
     local standing   = game.ServerGame.LatestTurnStanding
     local defenderID = standing.Territories[order.To].OwnerPlayerID
-    if orderResult.IsSuccessful and defenderID ~= WL.PlayerID.Neutral then
-        if _KGC_killerOf[defenderID] == nil then
-            _KGC_killerOf[defenderID] = attackerID
-        end
+
+    if defenderID == WL.PlayerID.Neutral then return end
+
+    local defenderTeam = standing.Territories[order.To].OwnerPlayerID
+    -- Get the defender's team from the game players
+    local defenders = game.Game.Players
+    local defenderPlayer = defenders[defenderID]
+    if defenderPlayer == nil then return end
+    local teamID = defenderPlayer.Team
+
+    if orderResult.IsSuccessful then
+        -- Successful attack on a team member: overwrite with this attacker
+        _KGC_teamKiller[teamID] = attackerID
     end
-    if not orderResult.IsSuccessful and defenderID ~= WL.PlayerID.Neutral then
-        if _KGC_killerOf[attackerID] == nil then
-            _KGC_killerOf[attackerID] = defenderID
+
+    if not orderResult.IsSuccessful then
+        -- Failed attack: attacker's commander may have died, killing them
+        -- The defender's team gets credit for killing the attacker's team
+        local attackerPlayer = defenders[attackerID]
+        if attackerPlayer ~= nil then
+            _KGC_teamKiller[attackerPlayer.Team] = defenderID
         end
     end
 end
@@ -46,6 +60,9 @@ function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
+    -- Track which teams we've already processed this turn
+    local processedTeams = {}
+
     for playerID, player in pairs(players) do
         if not _KGC_wasAlive[playerID] then goto continue end
 
@@ -54,35 +71,37 @@ function Server_AdvanceTurn_End(game, addNewOrder)
 
         if not nowElim and not nowSurr then goto continue end
 
-        -- Team check: only act when the last alive teammate is gone
-        do
-            local myTeam = player.Team
-            local gameHasTeams = false
+        local myTeam = player.Team
+
+        -- Only process each team once
+        if processedTeams[myTeam] then goto continue end
+
+        -- Team check: only act when no teammates are still alive
+        local gameHasTeams = false
+        for _, other in pairs(players) do
+            if other.Team ~= myTeam then gameHasTeams = true; break end
+        end
+        if gameHasTeams then
+            local teammateAlive = false
             for _, other in pairs(players) do
-                if other.Team ~= myTeam then gameHasTeams = true; break end
-            end
-            if gameHasTeams then
-                local teammateAlive = false
-                for _, other in pairs(players) do
-                    if other.ID ~= playerID
-                       and other.Team == myTeam
-                       and other.State == WL.GamePlayerState.Playing then
-                        teammateAlive = true
-                        break
-                    end
+                if other.ID ~= playerID
+                   and other.Team == myTeam
+                   and other.State == WL.GamePlayerState.Playing then
+                    teammateAlive = true
+                    break
                 end
-                if teammateAlive then goto continue end
             end
+            if teammateAlive then goto continue end
         end
 
-        -- Collect cards from ALL team members since cards can be stored
-        -- under any team member's ID in a team game.
-        local wholeCards = {}
-        local pieces     = {}
-        -- Also track which player each piece belongs to so we can subtract correctly
+        processedTeams[myTeam] = true
+
+        -- Collect cards from ALL team members
+        local wholeCards     = {}
+        local pieces         = {}
         local piecesPerPlayer = {}
         for _, other in pairs(players) do
-            if other.Team == player.Team then
+            if other.Team == myTeam then
                 local pc = standing.Cards[other.ID]
                 if pc ~= nil then
                     if pc.WholeCards ~= nil then
@@ -110,16 +129,21 @@ function Server_AdvanceTurn_End(game, addNewOrder)
         local hasPieces     = tableHasKeys(pieces)
         if not hasWholeCards and not hasPieces then goto continue end
 
-        local killerID  = _KGC_killerOf[playerID]
         local loserName = players[playerID].DisplayName(nil, false)
 
-        if nowSurr or killerID == nil then
-            -- Discard
+        -- Determine killer: use _KGC_teamKiller for the team,
+        -- but not if the team surrendered
+        local killerID = nil
+        if not nowSurr then
+            killerID = _KGC_teamKiller[myTeam]
+        end
+
+        if killerID == nil then
+            -- Surrender or no recorded killer (blockade etc.) -> discard
             local msg = nowSurr
                 and (loserName .. ' surrendered. Their cards have been discarded.')
                 or  (loserName .. ' was eliminated. Their cards have been discarded.')
             if hasPieces then
-                -- Subtract pieces from each team member who held them
                 local cardPiecesOpt = {}
                 for pid, playerPieces in pairs(piecesPerPlayer) do
                     local loserPieces = {}
@@ -153,7 +177,6 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             end
 
             if hasPieces then
-                -- Subtract pieces from each team member, add total to killer
                 local cardPiecesOpt = {}
                 for pid, playerPieces in pairs(piecesPerPlayer) do
                     local loserPieces = {}
