@@ -46,6 +46,26 @@ function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
+    -- UNCONDITIONAL CARD DUMP
+    local cardDump = 'CARDS: '
+    for pid, _ in pairs(players) do
+        local pc = standing.Cards[pid]
+        if pc ~= nil then
+            local wc = 0
+            local pieces = ''
+            if pc.WholeCards ~= nil then
+                for _ in pairs(pc.WholeCards) do wc = wc + 1 end
+            end
+            if pc.Pieces ~= nil then
+                for cid, cnt in pairs(pc.Pieces) do
+                    if cnt > 0 then pieces = pieces .. tostring(cid) .. 'x' .. tostring(cnt) .. ',' end
+                end
+            end
+            cardDump = cardDump .. '[pid=' .. tostring(pid) .. ' whole=' .. wc .. ' pieces=(' .. pieces .. ')]'
+        end
+    end
+    error('KGC_CARD_DUMP | ' .. cardDump)
+
     for playerID, player in pairs(players) do
         if not _KGC_wasAlive[playerID] then goto continue end
 
@@ -73,6 +93,25 @@ function Server_AdvanceTurn_End(game, addNewOrder)
                 end
                 if teammateAlive then goto continue end
             end
+        end
+
+        -- DIAGNOSTIC: crash when eliminated to show card lookup results
+        if nowElim or nowSurr then
+            local directPc = standing.Cards[playerID]
+            local cardInfo = 'direct_nil=' .. tostring(directPc == nil) .. ' '
+            -- Also check all other players' cards to find where team cards are stored
+            for otherpid, _ in pairs(players) do
+                local otherPc = standing.Cards[otherpid]
+                if otherPc ~= nil then
+                    local wc = 0
+                    for _ in pairs(otherPc.WholeCards) do wc = wc + 1 end
+                    cardInfo = cardInfo .. '[cards_under=' .. tostring(otherpid) .. ' whole=' .. wc .. ']'
+                end
+            end
+            error('KGC_CARDS_DIAG | eliminated=' .. tostring(playerID)
+                .. ' killer=' .. tostring(_KGC_killerOf[playerID])
+                .. ' wasAlive=' .. tostring(_KGC_wasAlive[playerID])
+                .. ' ' .. cardInfo)
         end
 
         local pc = standing.Cards[playerID]
