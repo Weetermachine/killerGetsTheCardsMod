@@ -10,11 +10,16 @@
 
 _KGC_killerOf    = {}
 _KGC_surrendered = {}
+_KGC_wasAlive    = {}
 
 function Server_AdvanceTurn_Start(game, addNewOrder)
     _KGC_killerOf    = {}
     _KGC_surrendered = {}
+    _KGC_wasAlive    = {}
     for _, player in pairs(game.Game.Players) do
+        if player.State == WL.GamePlayerState.Playing then
+            _KGC_wasAlive[player.ID] = true
+        end
         if player.Surrendered == true then
             _KGC_surrendered[player.ID] = true
         end
@@ -48,7 +53,21 @@ function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
+    -- UNCONDITIONAL DUMP
+    local info = 'Elim=' .. tostring(WL.GamePlayerState.Eliminated) .. ' '
+    for pid, p in pairs(players) do
+        info = info .. '[pid=' .. tostring(pid)
+                    .. ' state=' .. tostring(p.State)
+                    .. ' team=' .. tostring(p.Team)
+                    .. ' surr=' .. tostring(p.Surrendered)
+                    .. ' killer=' .. tostring(_KGC_killerOf[pid]) .. ']'
+    end
+    error('KGC_DUMP | ' .. info)
+
     for playerID, player in pairs(players) do
+        -- Only process players who were alive at the start of this turn
+        if not _KGC_wasAlive[playerID] then goto continue end
+
         local nowElim = (player.State == WL.GamePlayerState.Eliminated)
         local nowSurr = _KGC_surrendered[playerID]
 
@@ -61,8 +80,8 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             for _, other in pairs(players) do
                 if other.Team ~= myTeam then gameHasTeams = true; break end
             end
+            local teammateAlive = false
             if gameHasTeams then
-                local teammateAlive = false
                 for _, other in pairs(players) do
                     if other.ID ~= playerID
                        and other.Team == myTeam
@@ -71,8 +90,30 @@ function Server_AdvanceTurn_End(game, addNewOrder)
                         break
                     end
                 end
-                if teammateAlive then goto continue end
             end
+            if teammateAlive then goto continue end
+        end
+
+        -- DIAGNOSTIC: crash with card/killer state for eliminated players
+        if nowElim or nowSurr then
+            local pc2 = standing.Cards[playerID]
+            local wc = 0
+            local pi = ''
+            if pc2 ~= nil then
+                if pc2.WholeCards ~= nil then
+                    for _ in pairs(pc2.WholeCards) do wc = wc + 1 end
+                end
+                if pc2.Pieces ~= nil then
+                    for cid, cnt in pairs(pc2.Pieces) do
+                        pi = pi .. tostring(cid) .. 'x' .. tostring(cnt) .. ','
+                    end
+                end
+            end
+            error('KGC_DIAG | pid=' .. tostring(playerID)
+                .. ' killer=' .. tostring(_KGC_killerOf[playerID])
+                .. ' cards_nil=' .. tostring(pc2 == nil)
+                .. ' wholeCards=' .. wc
+                .. ' pieces=(' .. pi .. ')')
         end
 
         local pc = standing.Cards[playerID]
