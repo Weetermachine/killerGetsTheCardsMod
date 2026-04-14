@@ -96,12 +96,12 @@ function Server_AdvanceTurn_End(game, addNewOrder)
 
         processedTeams[myTeam] = true
 
-        -- Collect cards from ALL team members
+        -- Collect cards from ALL team members (or just this player if no teams)
         local wholeCards     = {}
         local pieces         = {}
         local piecesPerPlayer = {}
         for _, other in pairs(players) do
-            if other.Team == myTeam then
+            if (gameHasTeams and other.Team == myTeam) or (not gameHasTeams and other.ID == playerID) then
                 local pc = standing.Cards[other.ID]
                 if pc ~= nil then
                     if pc.WholeCards ~= nil then
