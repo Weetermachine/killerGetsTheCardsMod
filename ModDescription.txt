@@ -1,0 +1,21 @@
+Killer Gets the Cards
+=====================
+When a player is eliminated, their cards and card pieces are transferred to whoever killed them. This adds a high-stakes risk/reward element to attacking — wiping out an opponent can hand you a massive card advantage, but overextending to do so could leave you vulnerable.
+
+How cards are awarded
+---------------------
+- You kill a player's last territory or commander: you receive all their cards.
+- A player's commander attacks your territory and dies, eliminating them: you receive their cards.
+- A player is eliminated by attacking a blockade (neutral territory): cards are discarded, no one receives them.
+- A player surrenders: cards are discarded, no one receives them.
+
+Team games
+----------
+In team games, cards are shared between teammates. No cards are transferred until the entire team is eliminated. Whoever lands the killing blow on the last surviving team member receives the full team card pool. If multiple team members are eliminated in the same turn by different players, the player who made the last kill (latest in turn order) receives the cards.
+
+Tips
+----
+- Prioritize eliminating players who have accumulated many cards — the reward can dramatically accelerate your reinforcement economy.
+- Be cautious about using commander attacks recklessly. If your commander dies in a failed attack, your killer receives your cards.
+- In team games, coordinate with teammates to ensure the killing blow on the last enemy team member goes to whoever will benefit most from the cards.
+- This mod works with all card types including Reinforcement, Airlift, Bomb, Spy, and others.
