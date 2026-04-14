@@ -46,26 +46,6 @@ function Server_AdvanceTurn_End(game, addNewOrder)
     local players  = game.Game.Players
     local standing = game.ServerGame.LatestTurnStanding
 
-    -- UNCONDITIONAL CARD DUMP
-    local cardDump = 'CARDS: '
-    for pid, _ in pairs(players) do
-        local pc = standing.Cards[pid]
-        if pc ~= nil then
-            local wc = 0
-            local pieces = ''
-            if pc.WholeCards ~= nil then
-                for _ in pairs(pc.WholeCards) do wc = wc + 1 end
-            end
-            if pc.Pieces ~= nil then
-                for cid, cnt in pairs(pc.Pieces) do
-                    if cnt > 0 then pieces = pieces .. tostring(cid) .. 'x' .. tostring(cnt) .. ',' end
-                end
-            end
-            cardDump = cardDump .. '[pid=' .. tostring(pid) .. ' whole=' .. wc .. ' pieces=(' .. pieces .. ')]'
-        end
-    end
-    error('KGC_CARD_DUMP | ' .. cardDump)
-
     for playerID, player in pairs(players) do
         if not _KGC_wasAlive[playerID] then goto continue end
 
@@ -95,39 +75,34 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             end
         end
 
-        -- DIAGNOSTIC: crash when eliminated to show card lookup results
-        if nowElim or nowSurr then
-            local directPc = standing.Cards[playerID]
-            local cardInfo = 'direct_nil=' .. tostring(directPc == nil) .. ' '
-            -- Also check all other players' cards to find where team cards are stored
-            for otherpid, _ in pairs(players) do
-                local otherPc = standing.Cards[otherpid]
-                if otherPc ~= nil then
-                    local wc = 0
-                    for _ in pairs(otherPc.WholeCards) do wc = wc + 1 end
-                    cardInfo = cardInfo .. '[cards_under=' .. tostring(otherpid) .. ' whole=' .. wc .. ']'
-                end
-            end
-            error('KGC_CARDS_DIAG | eliminated=' .. tostring(playerID)
-                .. ' killer=' .. tostring(_KGC_killerOf[playerID])
-                .. ' wasAlive=' .. tostring(_KGC_wasAlive[playerID])
-                .. ' ' .. cardInfo)
-        end
-
-        local pc = standing.Cards[playerID]
-        if pc == nil then goto continue end
-
+        -- Collect cards from ALL team members since cards can be stored
+        -- under any team member's ID in a team game.
         local wholeCards = {}
-        if pc.WholeCards ~= nil then
-            for _, instance in pairs(pc.WholeCards) do
-                wholeCards[#wholeCards + 1] = instance
-            end
-        end
-
-        local pieces = {}
-        if pc.Pieces ~= nil then
-            for cardID, count in pairs(pc.Pieces) do
-                if count > 0 then pieces[cardID] = count end
+        local pieces     = {}
+        -- Also track which player each piece belongs to so we can subtract correctly
+        local piecesPerPlayer = {}
+        for _, other in pairs(players) do
+            if other.Team == player.Team then
+                local pc = standing.Cards[other.ID]
+                if pc ~= nil then
+                    if pc.WholeCards ~= nil then
+                        for _, instance in pairs(pc.WholeCards) do
+                            wholeCards[#wholeCards + 1] = instance
+                        end
+                    end
+                    if pc.Pieces ~= nil then
+                        local playerPieces = {}
+                        for cardID, count in pairs(pc.Pieces) do
+                            if count > 0 then
+                                pieces[cardID] = (pieces[cardID] or 0) + count
+                                playerPieces[cardID] = count
+                            end
+                        end
+                        if tableHasKeys(playerPieces) then
+                            piecesPerPlayer[other.ID] = playerPieces
+                        end
+                    end
+                end
             end
         end
 
@@ -144,10 +119,15 @@ function Server_AdvanceTurn_End(game, addNewOrder)
                 and (loserName .. ' surrendered. Their cards have been discarded.')
                 or  (loserName .. ' was eliminated. Their cards have been discarded.')
             if hasPieces then
-                local loserPieces = {}
-                for cardID, count in pairs(pieces) do loserPieces[cardID] = -count end
+                -- Subtract pieces from each team member who held them
                 local cardPiecesOpt = {}
-                cardPiecesOpt[playerID] = loserPieces
+                for pid, playerPieces in pairs(piecesPerPlayer) do
+                    local loserPieces = {}
+                    for cardID, count in pairs(playerPieces) do
+                        loserPieces[cardID] = -count
+                    end
+                    cardPiecesOpt[pid] = loserPieces
+                end
                 local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
                 event.AddCardPiecesOpt = cardPiecesOpt
                 addNewOrder(event)
@@ -173,14 +153,19 @@ function Server_AdvanceTurn_End(game, addNewOrder)
             end
 
             if hasPieces then
-                local loserPieces  = {}
+                -- Subtract pieces from each team member, add total to killer
+                local cardPiecesOpt = {}
+                for pid, playerPieces in pairs(piecesPerPlayer) do
+                    local loserPieces = {}
+                    for cardID, count in pairs(playerPieces) do
+                        loserPieces[cardID] = -count
+                    end
+                    cardPiecesOpt[pid] = loserPieces
+                end
                 local killerPieces = {}
                 for cardID, count in pairs(pieces) do
-                    loserPieces[cardID]  = -count
                     killerPieces[cardID] = count
                 end
-                local cardPiecesOpt = {}
-                cardPiecesOpt[playerID] = loserPieces
                 cardPiecesOpt[killerID] = killerPieces
                 local event = WL.GameOrderEvent.Create(playerID, msg, nil, nil, nil, nil)
                 event.AddCardPiecesOpt = cardPiecesOpt
